@@ -9,7 +9,8 @@ const uid = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), b => (b
 const clone = o => JSON.parse(JSON.stringify(o));
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
 
-const db = { games: {}, players: {}, plays: {} };
+const db = { games: {}, players: {}, plays: {}, rankings: {} };
+const PRIV = !!CFG; // gemeinsame Runde: fremde Einzelnoten ausblenden
 const games = () => Object.values(db.games);
 const players = () => Object.values(db.players);
 const plays = () => Object.values(db.plays);
@@ -17,19 +18,27 @@ const G = id => db.games[id];
 const P = id => db.players[id];
 const me = () => { const id = localStorage.getItem(LS.me); return id && db.players[id] ? id : null; };
 
+function gameFromSeed(s) {
+  return { id: uid(), name: s.n, type: s.t, parent: null, loc: s.l || '', note: s.a || '', ratings: {}, overall: {}, lowWins: false, ...infoFrom(s) };
+}
 function seedGames() {
   const list = SEED.map(s => ({ id: uid(), name: s.n, type: s.t, _p: s.p || null, loc: s.l || '', note: s.a || '', ratings: {}, overall: {}, lowWins: false, ...infoFrom(s) }));
   const byName = Object.fromEntries(list.map(g => [g.name, g.id]));
   list.forEach(g => { g.parent = (g._p && byName[g._p]) || null; delete g._p; });
   return list;
 }
-const INFO_V = 4; // erhöhen, wenn die Sammlung neue Felder bekommt
+const INFO_V = 5; // erhöhen, wenn die Sammlung neue Felder bekommt
 function infoFrom(s) {
   return { desc: s.d || '', minP: s.min ?? null, maxP: s.max ?? null, time: s.dur || null, weight: s.w ?? null, tags: s.tags || [], year: s.y ?? null, bgg: s.bgg ?? null, img: s.img || null, thumb: s.th || null, infoV: INFO_V };
 }
 // Spiel-Infos aus der Sammlung nachtragen (nur leere Felder, nur einmal pro Spiel)
 function fillInfo() {
   const byName = Object.fromEntries(SEED.map(x => [x.n, x]));
+  // umbenannte Spiele (z. B. Pub Quiz -> Kneipenquiz): Name und Infos komplett erneuern
+  for (const sd of SEED) if (sd.was) for (const g of games().filter(x => x.name === sd.was)) {
+    const patch = { name: sd.n, ...infoFrom(sd) };
+    if (store === Local) applyPatch(g, patch); else { applyPatch(g, patch); store.update('games', g.id, patch); }
+  }
   for (const g of games()) {
     // Reparatur: eine frühere Version hatte die Art (Grundspiel/Erweiterung) mit der Spieldauer überschrieben
     if (typeof g.type !== 'string') { const src = byName[g.name]; const fix = { type: src ? src.t : 'base' }; if (Array.isArray(g.type)) { fix.infoV = 0; } store === Local ? applyPatch(g, fix) : store.update('games', g.id, fix); if (fix.infoV === 0) g.infoV = 0; }
@@ -38,6 +47,14 @@ function fillInfo() {
     const patch = {};
     for (const [k, v] of Object.entries(info)) if (k === 'infoV' || g[k] == null || g[k] === '' || (Array.isArray(g[k]) && !g[k].length)) patch[k] = v;
     if (store === Local) applyPatch(g, patch); else store.update('games', g.id, patch);
+  }
+  // neue Spiele aus der Sammlung ergänzen und Erweiterungen ihrem Grundspiel zuordnen
+  const have = new Set(games().map(g => g.name));
+  for (const sd of SEED) if (!have.has(sd.n)) { const g = gameFromSeed(sd); if (store === Local) db.games[g.id] = g; else { db.games[g.id] = g; store.set('games', g.id, g); } }
+  const idByName = Object.fromEntries(games().map(g => [g.name, g.id]));
+  for (const g of games()) {
+    const sd = byName[g.name];
+    if (sd && sd.p && !g.parent && idByName[sd.p]) { if (store === Local) g.parent = idByName[sd.p]; else store.update('games', g.id, { parent: idByName[sd.p] }); }
   }
   if (store === Local) Local.persist();
 }
@@ -89,11 +106,11 @@ function pickPhoto(gid) {
 const Local = {
   async start() {
     let d = null; try { d = JSON.parse(localStorage.getItem(LS.local)); } catch (e) {}
-    if (d) Object.assign(db, { games: d.games || {}, players: d.players || {}, plays: d.plays || {} });
+    if (d) Object.assign(db, { games: d.games || {}, players: d.players || {}, plays: d.plays || {}, rankings: d.rankings || {} });
     else { seedGames().forEach(g => db.games[g.id] = g); this.persist(); }
     try { const all = await IDB.all(); for (const [k, v] of Object.entries(all)) setCover(k, v); } catch (e) { console.warn('Keine Cover-Datenbank', e); }
   },
-  persist() { localStorage.setItem(LS.local, JSON.stringify({ games: db.games, players: db.players, plays: db.plays })); changed(); },
+  persist() { localStorage.setItem(LS.local, JSON.stringify({ games: db.games, players: db.players, plays: db.plays, rankings: db.rankings })); changed(); },
   set(c, id, d) { db[c][id] = { ...clone(d), id }; this.persist(); },
   update(c, id, p) { if (db[c][id]) { applyPatch(db[c][id], p); this.persist(); } },
   del(c, id) { delete db[c][id]; this.persist(); },
@@ -114,19 +131,26 @@ const Cloud = {
   },
   ref(c, id) { return this.F.doc(this.fs, 'groups', this.code, c, id); },
   async exists(code) { await this.connect(); return (await this.F.getDoc(this.F.doc(this.fs, 'groups', code))).exists(); },
+  // Neue Runde anlegen – vorhandene Daten dieses Geräts (Spiele, Spieler, Partien, Bewertungen, Fotos) werden übernommen
   async create(code) {
     await this.connect(); this.code = code;
+    let local = null; try { local = JSON.parse(localStorage.getItem(LS.local)); } catch (e) {}
+    const items = [];
+    if (local && local.games && Object.keys(local.games).length) {
+      for (const c of ['games', 'players', 'plays', 'rankings']) for (const [id, d] of Object.entries(local[c] || {})) { const x = clone(d); delete x.id; items.push([c, id, x]); }
+    } else seedGames().forEach(g => { const x = clone(g); delete x.id; items.push(['games', g.id, x]); });
     await this.F.setDoc(this.F.doc(this.fs, 'groups', code), { created: new Date().toISOString() });
-    const list = seedGames();
-    for (let i = 0; i < list.length; i += 400) {
+    for (let i = 0; i < items.length; i += 300) {
       const b = this.F.writeBatch(this.fs);
-      list.slice(i, i + 400).forEach(g => b.set(this.ref('games', g.id), g));
+      items.slice(i, i + 300).forEach(([c, id, d]) => b.set(this.ref(c, id), d));
       await b.commit();
     }
+    try { const photos = await IDB.all(); for (const [gid, blob] of Object.entries(photos)) await this.F.setDoc(this.ref('covers', gid), { data: await blobToData(blob) }); } catch (e) { console.warn(e); }
+    return items.length;
   },
   async start(code) {
     await this.connect(); this.code = code;
-    await Promise.all(['games', 'players', 'plays', 'covers'].map(c => new Promise(res => {
+    await Promise.all(['games', 'players', 'plays', 'covers', 'rankings'].map(c => new Promise(res => {
       let first = true;
       this.F.onSnapshot(this.F.collection(this.fs, 'groups', code, c), snap => {
         snap.docChanges().forEach(ch => {
@@ -225,13 +249,20 @@ function possibleCounts(g, ps = playsOf(g.id)) {
   else for (let n = 1; n <= 6; n++) s.add(n);
   return [...s].filter(n => n > 0).sort((a, b) => a - b);
 }
+// In der gemeinsamen Runde: einen Schnitt aus nur EINER fremden Bewertung nicht zeigen (sonst wäre die Einzelnote sichtbar)
+function visAvg(g, n) {
+  const a = avgN(g, n); if (!a || !PRIV || a.c >= 2) return a;
+  const only = Object.keys(g.ratings || {}).find(pid => g.ratings[pid]?.[n] != null);
+  return only === me() ? a : { v: null, c: 1 };
+}
 function bestWith(g) {
-  const e = ratedCounts(g).map(n => [n, avgN(g, n).v]);
+  const e = ratedCounts(g).map(n => [n, visAvg(g, n)?.v]).filter(x => x[1] != null);
   if (!e.length) return null;
   const max = Math.max(...e.map(x => x[1]));
   return { n: e.filter(x => x[1] === max).map(x => x[0]).sort((a, b) => a - b), v: max };
 }
 function gameScore(g) {
+  if (PRIV) { const who = new Set([...Object.keys(g.overall || {}).filter(k => g.overall[k] != null), ...Object.keys(g.ratings || {}).filter(k => Object.values(g.ratings[k] || {}).some(v => v != null))]); if (who.size === 1 && !who.has(me())) return null; }
   const ov = Object.values(g.overall || {}).filter(x => x != null);
   if (ov.length) return r1(mean(ov));
   const ok = new Set(possibleCounts(g));
@@ -274,7 +305,8 @@ document.addEventListener('click', e => { if (e.target.closest('[data-close]')) 
 
 /* ================= Tabs & Rendering ================= */
 let tab = 'plays', ready = false, raf = 0;
-const ui = { gq: '', gsort: 'az', pick: { who: null, guests: 0, time: 0, tags: new Set(), more: false } };
+const SORTS = [['rank', '🏆 Bestenliste'], ['az', 'A–Z'], ['last', 'Zuletzt gespielt'], ['most', 'Meistgespielt'], ['rate', 'Beste Bewertung'], ['never', 'Nie gespielt']];
+const ui = { rank: { who: 'me', n: 0 }, gq: '', gsort: 'az', pick: { who: null, guests: 0, time: 0, tags: new Set(), more: false } };
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab;
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
@@ -290,7 +322,7 @@ function render() {
   $('#title').textContent = { plays: 'Partien', games: 'Spiele', pick: 'Was spielen wir?', players: 'Spieler' }[tab];
   const hr = new Date().getHours(), gruss = hr < 11 ? 'Guten Morgen' : hr < 18 ? 'Hallo' : 'Guten Abend';
   $('#sub').textContent = tab === 'plays' ? `${gruss}, ${pname(me())} 👋` : tab === 'games' ? `${games().filter(g => g.type === 'base').length} Spiele im Regal` : tab === 'pick' ? 'Spieleabend planen 🎲' : `${players().length} Mitspieler`;
-  $('#fab').classList.toggle('hide', tab === 'players' || tab === 'pick');
+  $('#fab').classList.toggle('hide', tab === 'players' || tab === 'pick' || (tab === 'games' && ui.gsort === 'rank'));
   keepFocus(() => { $('#view').innerHTML = tab === 'plays' ? viewPlays() : tab === 'games' ? viewGames() : tab === 'pick' ? viewPick() : viewPlayers(); });
   bindView();
 }
@@ -336,6 +368,7 @@ function viewPlays() {
 /* ---------- Spiele ---------- */
 function gameMeta(g) { const ps = playsOf(g.id); return { count: ps.length, last: ps.length ? sortPlays(ps)[0].date : null }; }
 function viewGames() {
+  if (ui.gsort === 'rank') return viewRanking();
   const q = ui.gq.trim().toLowerCase();
   let list = games().filter(g => q ? (g.name.toLowerCase().includes(q) || (g.tags || []).some(t => t.toLowerCase().includes(q))) : (g.type === 'base' || !g.parent));
   const meta = new Map(list.map(g => [g.id, gameMeta(g)]));
@@ -348,7 +381,7 @@ function viewGames() {
     return az(a, b);
   });
   if (s === 'never') list = list.filter(g => meta.get(g.id).count === 0);
-  const sorts = [['az', 'A–Z'], ['last', 'Zuletzt gespielt'], ['most', 'Meistgespielt'], ['rate', 'Beste Bewertung'], ['never', 'Nie gespielt']];
+  const sorts = SORTS;
   let html = `<div class="search">${ICON.search}<input id="gq" placeholder="Spiel oder Kategorie suchen …" value="${esc(ui.gq)}" autocomplete="off"></div>
     <div class="chips">${sorts.map(([k, l]) => `<button class="chip ${s === k ? 'on' : ''}" data-sort="${k}">${l}</button>`).join('')}</div>
     <div class="small muted" style="margin:4px 4px 10px">${list.length} ${list.length === 1 ? 'Spiel' : 'Spiele'}</div>`;
@@ -378,12 +411,12 @@ function viewPlayers() {
   const ms = m ? playerStats(m) : { n: 0, wins: 0 };
   let html = `<div class="me-card">${avatar(P(m))}<div class="grow"><div class="small" style="opacity:.85;font-weight:600">Du bist</div><div class="name" style="font-size:20px">${esc(pname(m))}</div>
     <div class="small" style="opacity:.85">${ms.n} Partien · ${ms.wins} Siege</div></div><button class="chip" id="switchMe">Wechseln</button></div>`;
-  html += CFG ? `<div class="card"><div class="row"><div class="grow"><div class="small muted">Eure Gruppe</div><div class="name" style="letter-spacing:.12em">${esc(Cloud.code)}</div></div>
-      <button class="chip on" id="invite">${'Einladen'}</button></div>
-      <p class="small muted" style="margin:8px 0 0">Schick den Link an deine Mitspieler. Sie öffnen ihn, wählen ihren Namen – fertig. Alles wird live geteilt.</p></div>`
+  html += CFG ? `<div class="card"><div class="row"><div class="grow"><div class="small muted">Eure Spielerrunde</div><div class="name">${players().length} Mitspieler · live geteilt</div></div>
+      <button class="chip on" id="invite">Einladen</button></div>
+      <p class="small muted" style="margin:8px 0 0">Schick den Einladungslink an neue Mitspieler. Sie öffnen ihn einmal, wählen ihren Namen – fertig.</p></div>`
     : `<div class="card small muted">Nur auf diesem Gerät gespeichert. Mitspieler können hier reihum eintragen. Für eigene Handys: Cloud einrichten (siehe Anleitung).</div>`;
   html += `<div class="sec">Alle Spieler</div>` + list.map(({ p, s }) => `<div class="card tap row" data-player="${p.id}">${avatar(p)}
-    <div class="grow"><div class="name">${esc(p.name)}${p.id === m ? ' <span class="tag acc">du</span>' : ''}</div><div class="small muted">${s.n} Partien · ${s.wins} Siege</div>
+    <div class="grow"><div class="name">${esc(p.name)}${p.id === m ? ' <span class="tag acc">du</span>' : ''}${db.rankings[p.id]?.public ? ' <span title="öffentliche Bestenliste">🏆</span>' : ''}</div><div class="small muted">${s.n} Partien · ${s.wins} Siege</div>
     ${s.n ? `<div class="bar"><i style="width:${s.rate}%"></i></div>` : ''}</div>
     ${s.n ? `<div class="score" style="font-size:18px">${s.rate}%</div>` : ''}</div>`).join('');
   html += `<button class="btn" id="addPlayer" style="margin-top:6px">${ICON.plus} Spieler hinzufügen</button>
@@ -404,8 +437,10 @@ function addPlayer(name) {
 function bindView() {
   const v = $('#view');
   v.onclick = e => {
-    const t = e.target.closest('[data-play],[data-mine],[data-game],[data-player],[data-sort],#newGame,#addPlayer,#exp,#imp,#switchMe,#invite,[data-who],[data-time],[data-tag],#gm,#gp,#rand,#more');
+    const t = e.target.closest('[data-play],[data-mine],[data-game],[data-player],[data-sort],#newGame,#addPlayer,#exp,#imp,#switchMe,#invite,[data-who],[data-time],[data-tag],#gm,#gp,#rand,#more,[data-rwho],[data-rn],#rpub,[data-rpos]');
     if (!t) return;
+    if (e.target.closest('.grip') || Date.now() - lastDrag < 400) return;
+    if (rankClick(t)) return;
     if (tab === 'pick' && pickClick(t)) return;
     if (t.dataset.play) playForm(t.dataset.play);
     else if (t.dataset.mine) myEntry(t.dataset.mine);
@@ -421,9 +456,10 @@ function bindView() {
   };
   const gq = $('#gq'); if (gq) gq.oninput = () => { ui.gq = gq.value; render(); };
   const f = $('#impFile'); if (f) f.onchange = () => importData(f.files[0]);
+  const rl = $('#rlist'); if (rl && rl.dataset.drag) bindDrag(rl, moveRank);
 }
 async function invite() {
-  const url = inviteLink(), text = `Komm in unsere Spielegruppe! Code: ${Cloud.code}`;
+  const url = inviteLink(), text = 'Komm in unsere Spielerunde! Einmal den Link öffnen, Namen wählen – fertig. 🎲';
   if (navigator.share) { try { await navigator.share({ title: 'Spieletracker', text, url }); return; } catch (e) { if (e.name === 'AbortError') return; } }
   try { await navigator.clipboard.writeText(url); toast('Link kopiert'); } catch (e) { prompt('Link kopieren:', url); }
 }
@@ -432,7 +468,7 @@ async function invite() {
 function rateRow(label, val, key, { big = false, avg = null } = {}) {
   return `<div class="rate ${big ? 'big' : ''}"><label class="ell">${label}</label><div class="seg" data-rate="${key}">
     ${Array.from({ length: 10 }, (_, i) => `<button data-v="${i + 1}" aria-label="${i + 1}" style="${val != null && i < val ? 'background:' + rColor(val) : ''}"></button>`).join('')}
-    </div><span class="val">${val ?? '–'}</span>${avg !== null ? `<span class="avg">${avg ? 'Ø ' + fR(avg.v) + '<i>' + avg.c + '</i>' : ''}</span>` : ''}</div>`;
+    </div><span class="val">${val ?? '–'}</span>${avg !== null ? `<span class="avg">${avg ? (avg.v == null ? `<span title="erst ab 2 Bewertungen sichtbar">🔒<i>${avg.c}</i></span>` : 'Ø ' + fR(avg.v) + '<i>' + avg.c + '</i>') : ''}</span>` : ''}</div>`;
 }
 function bindRates(root, onSet) {
   root.querySelectorAll('.seg').forEach(seg => seg.onclick = e => {
@@ -484,8 +520,8 @@ function playForm(playId, presetGame, presetPids) {
           <input type="number" inputmode="decimal" placeholder="Punkte" id="sc-${x.pid}" data-sc="${i}" value="${x.score}">
           <button class="cr ${wins.has(x.pid) ? 'on' : ''}" data-win="${i}" aria-label="Sieger">${ICON.crown}</button></div>`).join('')}
       </div>` : ''}
-      ${g && n ? `<div class="field"><span>Wie gut ist ${esc(g.name)} zu ${n}? – jeder bewertet selbst</span>
-        ${f.rows.map((x, i) => rateRow(esc(pname(x.pid)), shownRating(x, g, n), i)).join('')}</div>` : ''}
+      ${g && n && (!PRIV || f.rows.some(x => x.pid === me())) ? `<div class="field"><span>${PRIV ? `Wie gut findest <b>du</b> ${esc(g.name)} zu ${n}? <span style="font-weight:500">(die anderen bewerten auf ihrem Handy)</span>` : `Wie gut ist ${esc(g.name)} zu ${n}? – jeder bewertet selbst`}</span>
+        ${f.rows.map((x, i) => (!PRIV || x.pid === me()) ? rateRow(PRIV ? 'Du' : esc(pname(x.pid)), shownRating(x, g, n), i) : '').join('')}</div>` : ''}
       <label class="field"><span>Notiz</span><textarea id="note" rows="2" placeholder="optional">${esc(f.note)}</textarea></label>
       <button class="btn pri" id="save">Speichern</button>
       ${old ? '<button class="btn danger" id="del">Partie löschen</button>' : ''}`;
@@ -533,7 +569,7 @@ function playForm(playId, presetGame, presetPids) {
     if (!f.rows.length) return toast('Wer hat mitgespielt?');
     const g = G(f.gameId), n = f.rows.length;
     const entry = (x, i) => {
-      const e = { o: i, score: num(x.score), win: !!x.win, rating: shownRating(x, g, n) };
+      const e = { o: i, score: num(x.score), win: !!x.win, rating: (PRIV && x.pid !== me()) ? (old?.p?.[x.pid]?.rating ?? null) : shownRating(x, g, n) };
       if (x.skip && e.rating == null) e.skip = true;
       return e;
     };
@@ -603,7 +639,7 @@ function gameSheet(gid, { pids = null } = {}) {
     // Wer kann hier bewerten: du zuerst, dann wer das Spiel gespielt/bewertet hat, dann der Rest
     const involved = new Set([...ps.flatMap(p => Object.keys(p.p || {})), ...Object.keys(g.ratings || {}), ...Object.keys(g.overall || {})]);
     const raters = players().sort((a, b) => (b.id === me()) - (a.id === me()) || involved.has(b.id) - involved.has(a.id) || a.name.localeCompare(b.name));
-    if (!rp || !P(rp)) rp = raters[0]?.id;
+    if (PRIV) rp = me(); else if (!rp || !P(rp)) rp = raters[0]?.id;
     const ov = Object.values(g.overall || {}).filter(x => x != null);
 
     const gs = gameScore(g), src = coverSrc(g);
@@ -631,13 +667,13 @@ function gameSheet(gid, { pids = null } = {}) {
       <button class="btn pri" id="play">${ICON.plus} ${pids ? 'Los geht’s – Partie starten' : 'Partie eintragen'}</button>
       <div class="sec">Bewertung</div>
       <div class="card">
-        <div class="small muted" style="margin-bottom:6px">Bewertung von</div>
-        <div class="chips" style="margin-bottom:6px">${raters.map(p => `<button class="chip ${p.id === rp ? 'on' : ''}" data-rp="${p.id}">${esc(p.name)}</button>`).join('')}</div>
-        ${rateRow('Gesamt', g.overall?.[rp] ?? null, 'overall', { big: true, avg: ov.length ? { v: r1(mean(ov)), c: ov.length } : false })}
+        ${PRIV ? `<div class="rate-head"><span>Deine Note</span><span>Alle</span></div>` : `<div class="small muted" style="margin-bottom:6px">Bewertung von</div>
+        <div class="chips" style="margin-bottom:6px">${raters.map(p => `<button class="chip ${p.id === rp ? 'on' : ''}" data-rp="${p.id}">${esc(p.name)}</button>`).join('')}</div>`}
+        ${rateRow('Gesamt', g.overall?.[rp] ?? null, 'overall', { big: true, avg: ov.length ? ((PRIV && ov.length < 2 && g.overall?.[me()] == null) ? { v: null, c: 1 } : { v: r1(mean(ov)), c: ov.length }) : false })}
         <div style="height:1px;background:var(--line);margin:6px 0"></div>
         ${g.minP == null ? '<p class="small muted" style="margin:4px 0">Spielerzahl unbekannt – trag sie über den Stift oben ein, dann erscheinen nur die passenden Zeilen.</p>' : ''}
-        ${counts.map(n => rateRow(`${n} Spieler${countN[n] ? ` <span class="muted" style="font-weight:500">·${countN[n]}</span>` : ''}`, myRating(g, rp, n), n, { avg: avgN(g, n) || false })).join('')}
-        <p class="small muted" style="margin:8px 0 0">Balken = Note von <b>${esc(pname(rp))}</b> (1–10, nochmal tippen entfernt sie). Ø = Schnitt aller, kleine Zahl = wie viele bewertet haben. ·N = so oft in der Besetzung gespielt.</p>
+        ${counts.map(n => rateRow(`${n} Spieler${countN[n] ? ` <span class="muted" style="font-weight:500">·${countN[n]}</span>` : ''}`, myRating(g, rp, n), n, { avg: visAvg(g, n) || false })).join('')}
+        <p class="small muted" style="margin:8px 0 0">${PRIV ? 'Balken = <b>deine</b> Note (1–10, nochmal tippen entfernt sie). Nur du siehst sie. Rechts: Schnitt aller, kleine Zahl = wie viele bewertet haben.' : `Balken = Note von <b>${esc(pname(rp))}</b> (1–10, nochmal tippen entfernt sie). Ø = Schnitt aller, kleine Zahl = wie viele bewertet haben.`} ·N = so oft in der Besetzung gespielt.</p>
       </div>
       ${ps.length ? `<div class="sec">Statistik</div>
       <div class="stats"><div class="stat"><b>${ps.length}</b><span>Partien</span></div>
@@ -752,7 +788,7 @@ function pickResults() {
     const own = who.map(pid => myRating(g, pid, n)).filter(x => x != null);
     let score = null, why = '';
     if (own.length) { score = r1(mean(own)); why = `Ø ${fR(score)} von euch zu ${n}`; }
-    else if (avgN(g, n)) { score = avgN(g, n).v; why = `Ø ${fR(score)} zu ${n}`; }
+    else if (visAvg(g, n)?.v != null) { score = visAvg(g, n).v; why = `Ø ${fR(score)} zu ${n}`; }
     else if (gameScore(g) != null) { score = gameScore(g); why = `Ø ${fR(score)} gesamt`; }
     const m = gameMeta(g);
     return { g, score, why, m, fit: g.minP == null ? 0 : 1 };
@@ -809,8 +845,135 @@ function pickClick(t) {
   render(); return true;
 }
 
+/* ================= Bestenliste ================= */
+const rankPool = () => games().filter(g => g.type === 'base' || !g.parent);
+// Höchstnote über alle möglichen Spielerzahlen (sonst Gesamtnote)
+function peak(g, pid) {
+  const ok = new Set(possibleCounts(g));
+  const v = Object.entries(g.ratings?.[pid] || {}).filter(([n, x]) => ok.has(+n) && x != null).map(([, x]) => x);
+  return v.length ? Math.max(...v) : (g.overall?.[pid] ?? null);
+}
+// persönliche Reihenfolge: eigene Sortierung, neue Spiele werden nach Note einsortiert
+function rankingOf(pid) {
+  const rated = rankPool().map(g => ({ g, v: peak(g, pid) })).filter(x => x.v != null);
+  const byId = new Map(rated.map(x => [x.g.id, x]));
+  const saved = (db.rankings[pid]?.order || []).filter(id => byId.has(id));
+  const list = saved.map(id => byId.get(id));
+  const rest = rated.filter(x => !saved.includes(x.g.id)).sort((a, b) => b.v - a.v || a.g.name.localeCompare(b.g.name));
+  for (const x of rest) { let i = list.findIndex(y => y.v < x.v); if (i < 0) i = list.length; list.splice(i, 0, x); }
+  return list;
+}
+function countList(pid, n) {
+  return rankPool().filter(g => possibleCounts(g).includes(n)).map(g => ({ g, v: myRating(g, pid, n) })).filter(x => x.v != null)
+    .sort((a, b) => b.v - a.v || (rankingOf(pid).findIndex(y => y.g.id === a.g.id) - rankingOf(pid).findIndex(y => y.g.id === b.g.id)));
+}
+// Gruppenliste: Plätze aller Ranglisten zusammengerechnet (Platz 1 = 10 Punkte, letzter Platz = 1 Punkt)
+function groupList(n) {
+  const raters = players().map(p => p.id);
+  if (n) {
+    return rankPool().filter(g => possibleCounts(g).includes(n)).map(g => ({ g, a: avgN(g, n) })).filter(x => x.a && (x.a.c >= 2 || raters.length < 2))
+      .map(x => ({ g: x.g, v: x.a.v, c: x.a.c })).sort((a, b) => b.v - a.v || b.c - a.c);
+  }
+  const pts = {}, cnt = {};
+  for (const pid of raters) {
+    const l = rankingOf(pid), L = l.length;
+    l.forEach((x, i) => { pts[x.g.id] = (pts[x.g.id] || 0) + (L === 1 ? 10 : 10 - 9 * i / (L - 1)); cnt[x.g.id] = (cnt[x.g.id] || 0) + 1; });
+  }
+  const min = raters.filter(pid => rankingOf(pid).length).length >= 2 ? 2 : 1;
+  return Object.keys(pts).filter(id => cnt[id] >= min && G(id)).map(id => ({ g: G(id), v: r1(pts[id] / cnt[id]), c: cnt[id] }))
+    .sort((a, b) => b.v - a.v || b.c - a.c);
+}
+const medal = i => ['🥇', '🥈', '🥉'][i] || `<b>${i + 1}</b>`;
+function viewRanking() {
+  const R = ui.rank, m = me(), mine = R.who === 'me';
+  const counts = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  const list = mine ? (R.n ? countList(m, R.n) : rankingOf(m)) : groupList(R.n);
+  const myOrder = rankingOf(m).map(x => x.g.id);
+  const pub = !!db.rankings[m]?.public;
+  const drag = mine && !R.n && list.length > 1;
+  let html = `<div class="chips">${SORTS.map(([k, l]) => `<button class="chip ${ui.gsort === k ? 'on' : ''}" data-sort="${k}">${l}</button>`).join('')}</div>
+    <div class="seg2"><button class="${mine ? 'on' : ''}" data-rwho="me">Meine</button><button class="${!mine ? 'on' : ''}" data-rwho="all">Alle</button></div>
+    <div class="chips">${counts.map(n => `<button class="chip ${R.n === n ? 'on' : ''}" data-rn="${n}">${n ? 'zu ' + n : 'Alle Spielerzahlen'}</button>`).join('')}</div>`;
+  if (mine) html += `<div class="card row rank-info"><div class="grow small">${R.n ? `Automatisch nach deinen Noten <b>zu ${R.n}</b>.` : drag ? 'Halte <b>⠿</b> gedrückt und zieh ein Spiel an seinen Platz – oder tippe auf die Platzzahl.' : 'Bewerte Spiele, dann erscheinen sie hier.'}</div>
+      <button class="chip ${pub ? 'on' : ''}" id="rpub">${pub ? '🌍 Öffentlich' : '🔒 Geheim'}</button></div>`;
+  else html += `<div class="card small rank-info">${R.n ? `Schnitt aller Noten <b>zu ${R.n}</b>.` : 'Aus den Ranglisten aller Mitspieler zusammengerechnet (Platz 1 = 10 Punkte).'} Wer was vergeben hat, sieht niemand.</div>`;
+  if (!list.length) return html + `<div class="empty"><div class="big">🏆</div><h3>${mine ? 'Noch keine Bewertungen' : 'Noch zu wenig Bewertungen'}</h3><p>${mine ? 'Öffne ein Spiel und bewerte es – dann landet es hier.' : 'Sobald mindestens zwei Leute ein Spiel bewertet haben, erscheint es hier.'}</p></div>`;
+  html += `<div id="rlist" ${drag ? 'data-drag="1"' : ''}>` + list.map((x, i) => {
+    const g = x.g, myPos = myOrder.indexOf(g.id), myV = R.n ? myRating(g, m, R.n) : peak(g, m);
+    const info = mine ? [R.n ? `zu ${R.n}: ${x.v}` : `beste Note ${x.v}`, (() => { const a = R.n ? visAvg(g, R.n) : null; const sc = R.n ? (a && a.v) : gameScore(g); return sc != null ? `Alle Ø ${fR(sc)}` : ''; })()]
+      : [R.n ? `Ø ${fR(x.v)} · ${x.c} Bewertungen` : `${fR(x.v)} Punkte · von ${x.c} gerankt`, myV != null ? (R.n ? `Du: ${myV}` : `Du: Platz ${myPos + 1}`) : ''];
+    return `<div class="card row rrow${glow(g)} data-game="${g.id}" data-i="${i}">
+      <span class="rank ${i < 3 ? 'top' : ''}" ${drag ? `data-rpos="${i}"` : ''}>${medal(i)}</span>${cover(g, 'sm')}
+      <div class="grow"><div class="name ell">${esc(g.name)}</div><div class="small muted ell">${info.filter(Boolean).join(' · ')}</div></div>
+      ${mine ? `<span class="rbadge sm" style="background:${rColor(x.v)}">${x.v}</span>` : `<span class="rbadge sm" style="background:${rColor(x.v)}">${fR(x.v)}</span>`}
+      ${drag ? '<span class="grip" aria-label="Verschieben">⠿</span>' : ''}</div>`;
+  }).join('') + '</div>';
+  return html;
+}
+function saveRanking(patch) {
+  const m = me(), cur = db.rankings[m] || {};
+  store.set('rankings', m, { order: cur.order || [], public: !!cur.public, ...patch, updated: new Date().toISOString() });
+}
+function moveRank(from, to) {
+  const order = rankingOf(me()).map(x => x.g.id);
+  const [id] = order.splice(from, 1); order.splice(to, 0, id);
+  saveRanking({ order });
+}
+function rankClick(t) {
+  if (tab !== 'games' || ui.gsort !== 'rank') return false;
+  if (t.dataset.rwho) ui.rank.who = t.dataset.rwho;
+  else if (t.dataset.rn != null) ui.rank.n = +t.dataset.rn;
+  else if (t.id === 'rpub') {
+    const pub = !db.rankings[me()]?.public;
+    saveRanking({ public: pub, order: rankingOf(me()).map(x => x.g.id) });
+    toast(pub ? '🌍 Deine Bestenliste ist jetzt öffentlich' : '🔒 Deine Bestenliste ist jetzt geheim');
+  }
+  else if (t.dataset.rpos != null) {
+    const from = +t.dataset.rpos, len = rankingOf(me()).length;
+    const to = parseInt(prompt(`Auf welchen Platz? (1–${len})`, from + 1), 10);
+    if (!isNaN(to)) moveRank(from, Math.max(0, Math.min(len - 1, to - 1)));
+  }
+  else return false;
+  render(); return true;
+}
+// Ziehen & Ablegen über den Griff ⠿ (Maus und Touch), mit automatischem Scrollen am Rand
+let lastDrag = 0;
+function bindDrag(list, onDrop) {
+  list.querySelectorAll('.grip').forEach(h => h.onpointerdown = e => {
+    e.preventDefault(); e.stopPropagation();
+    const rows = [...list.querySelectorAll('.rrow')], row = h.closest('.rrow'), start = rows.indexOf(row);
+    const tops = rows.map(r => r.getBoundingClientRect().top + scrollY);
+    const pitch = rows.length > 1 ? tops[1] - tops[0] : row.offsetHeight;
+    const y0 = e.clientY + scrollY; let cur = start, lastY = e.clientY, timer;
+    row.classList.add('dragging'); h.setPointerCapture(e.pointerId);
+    const update = () => {
+      const dy = lastY + scrollY - y0; row.style.transform = `translateY(${dy}px) scale(1.02)`;
+      cur = Math.max(0, Math.min(rows.length - 1, start + Math.round(dy / pitch)));
+      rows.forEach((r, i) => { if (r === row) return; const sh = (start < cur && i > start && i <= cur) ? -pitch : (start > cur && i >= cur && i < start) ? pitch : 0; r.style.transform = sh ? `translateY(${sh}px)` : ''; });
+    };
+    timer = setInterval(() => { const edge = 90; if (lastY < edge) { scrollBy(0, -12); update(); } else if (lastY > innerHeight - edge - 70) { scrollBy(0, 12); update(); } }, 16);
+    h.onpointermove = ev => { lastY = ev.clientY; update(); };
+    h.onpointerup = h.onpointercancel = () => {
+      clearInterval(timer); h.onpointermove = h.onpointerup = h.onpointercancel = null;
+      rows.forEach(r => r.style.transform = ''); row.classList.remove('dragging'); lastDrag = Date.now();
+      if (cur !== start) onDrop(start, cur);
+    };
+  });
+}
+function playerRankingHTML(pid, favs, showAll) {
+  const isMe = pid === me(), r = db.rankings[pid];
+  if (!PRIV && !r) return favs.length ? `<div class="sec">Lieblingsspiele</div><div class="card list">${favs.map(x => `<div class="li"><div class="grow name ell">${esc(x.g.name)}</div><span class="rbadge" style="background:${rColor(x.v)}">${x.v}</span></div>`).join('')}</div>` : '';
+  if (!isMe && PRIV && !r?.public) return `<div class="sec">Bestenliste</div><div class="card small muted">🔒 ${esc(pname(pid))} hält die Bestenliste geheim.</div>`;
+  const l = rankingOf(pid); if (!l.length) return '';
+  const shown = showAll ? l : l.slice(0, 10);
+  return `<div class="sec">${isMe ? 'Deine Bestenliste' : 'Bestenliste von ' + esc(pname(pid))}${isMe ? (r?.public ? ' · 🌍 öffentlich' : ' · 🔒 geheim') : ''}</div>
+    <div class="card list">${shown.map((x, i) => `<div class="li tap" data-pg="${x.g.id}"><span class="rank ${i < 3 ? 'top' : ''}">${medal(i)}</span>${cover(x.g, 'sm')}<div class="grow name ell">${esc(x.g.name)}</div>${(isMe || !PRIV) ? `<span class="rbadge sm" style="background:${rColor(x.v)}">${x.v}</span>` : ''}</div>`).join('')}
+    ${!showAll && l.length > 10 ? `<button class="btn" id="rall" style="margin-top:8px">Alle ${l.length} anzeigen</button>` : ''}</div>`;
+}
+
 /* ================= Spieler-Detail ================= */
 function playerSheet(pid) {
+  let showAll = false;
   openSheet(s => {
     const p = P(pid); if (!p) { s.body.innerHTML = sheetHead('Gelöscht'); return; }
     const st = playerStats(pid);
@@ -821,10 +984,12 @@ function playerSheet(pid) {
       .filter(Boolean).sort((a, b) => b.v - a.v).slice(0, 5);
     s.body.innerHTML = sheetHead(esc(p.name), `<button class="iconbtn" id="ren">${ICON.edit}</button>`) + `
       <div class="stats"><div class="stat"><b>${st.n}</b><span>Partien</span></div><div class="stat"><b>${st.wins}</b><span>Siege</span></div><div class="stat"><b>${st.rate}%</b><span>Siegquote</span></div></div>
-      ${favs.length ? `<div class="sec">Lieblingsspiele</div><div class="card list">${favs.map(x => `<div class="li"><div class="grow name ell">${esc(x.g.name)}</div><span class="rbadge" style="background:${rColor(x.v)}">${x.v}</span></div>`).join('')}</div>` : ''}
+      ${playerRankingHTML(pid, favs, showAll)}
       ${rows.length ? `<div class="sec">Nach Spiel</div><div class="card list">${rows.map(([gid, e]) => `<div class="li"><div class="grow"><div class="name ell">${esc(G(gid)?.name || '?')}</div>
         <div class="small muted">${e.n}× gespielt · ${e.w} ${e.w === 1 ? 'Sieg' : 'Siege'}${e.best != null ? ' · Bestwert ' + e.best : ''}</div></div></div>`).join('')}</div>` : '<p class="muted" style="text-align:center">Noch keine Partien.</p>'}
       <button class="btn danger" id="dl" style="margin-top:10px">Spieler löschen</button>`;
+    const ra = $('#rall', s.body); if (ra) ra.onclick = () => { showAll = true; s.refresh(); };
+    s.body.querySelectorAll('[data-pg]').forEach(el => el.onclick = () => gameSheet(el.dataset.pg));
     $('#ren', s.body).onclick = () => { const n = prompt('Neuer Name', p.name); if (n && n.trim()) store.update('players', pid, { name: n.trim() }); };
     $('#dl', s.body).onclick = () => {
       if (st.n) return alert(`${p.name} steckt in ${st.n} Partien und kann nicht gelöscht werden. Umbenennen geht aber.`);
@@ -838,6 +1003,9 @@ function setupScreen(html) {
   document.body.classList.add('setup');
   $('#title').textContent = 'Spieletracker';
   $('#view').innerHTML = html;
+}
+function inviteOnly(msg) {
+  setupScreen(`<div class="hero"><div class="big">🎲</div><h2>Spieletracker</h2><p class="muted">${msg || 'Diese App gehört zu einer privaten Spielerrunde.<br>Öffne den <b>Einladungslink</b>, den du von deinen Mitspielern bekommen hast.'}</p></div>`);
 }
 function groupSetup(prefill) {
   setupScreen(`<div class="hero"><div class="big">🎲</div><h2>Willkommen!</h2><p class="muted">Tracke eure Partien und bewertet eure Spiele – jeder auf seinem eigenen Handy.</p></div>
@@ -883,15 +1051,28 @@ function whoAmI() {
   };
 }
 async function boot() {
-  const urlG = (new URLSearchParams(location.search).get('g') || '').toUpperCase();
+  const urlG = (new URLSearchParams(location.search).get('g') || '').trim().toUpperCase();
   if (CFG) {
-    const g = localStorage.getItem(LS.group);
-    if (!g || (urlG && urlG !== g)) {
-      if (g && urlG && !confirm(`Zur Gruppe ${urlG} wechseln? (Bisher: ${g})`)) { history.replaceState(null, '', location.pathname); }
-      else { if (urlG) { try { if (await Cloud.exists(urlG)) return enterGroup(urlG); } catch (e) {} } return groupSetup(urlG); }
+    const saved = localStorage.getItem(LS.group);
+    const code = urlG || saved;
+    if (!code) return inviteOnly();
+    const offline = () => setupScreen(`<div class="empty"><div class="big">📡</div><h3>Keine Verbindung</h3><p>Beim ersten Öffnen braucht die App Internet.</p><button class="btn pri" onclick="location.reload()">Nochmal versuchen</button></div>`);
+    if (code !== saved) {   // erstes Öffnen des Einladungslinks
+      setupScreen(`<div class="empty"><div class="big">🎲</div><h3>Verbinde mit eurer Spielerrunde …</h3></div>`);
+      try {
+        if (!(await Cloud.exists(code))) {
+          setupScreen(`<div class="empty"><div class="big">✨</div><h3>Eure Spielerrunde wird angelegt …</h3><p>Die Spiele und Daten von diesem Gerät werden übernommen.</p></div>`);
+          await Cloud.create(code);
+        }
+      } catch (e) {
+        console.error(e);
+        if (e.code === 'permission-denied') return inviteOnly('Dieser Einladungslink ist ungültig. Bitte frag nach dem aktuellen Link.');
+        return offline();
+      }
+      localStorage.setItem(LS.group, code);
     }
-    try { await Cloud.start(localStorage.getItem(LS.group)); }
-    catch (e) { console.error(e); setupScreen(`<div class="empty"><div class="big">📡</div><h3>Keine Verbindung</h3><p>Beim ersten Start braucht die App Internet.</p><button class="btn pri" onclick="location.reload()">Nochmal versuchen</button></div>`); return; }
+    history.replaceState(null, '', location.pathname);
+    try { await Cloud.start(code); } catch (e) { console.error(e); return offline(); }
   } else await Local.start();
   fillInfo();
   if (!me()) return whoAmI();

@@ -301,3 +301,16 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opa
 @media (prefers-color-scheme:dark){.glow::before{opacity:.5}}
 .glow.todo::before{display:none}
 @media (prefers-reduced-motion:reduce){body::before{animation:none}}
+
+/* ================= v6: Bestenliste ================= */
+.seg2{display:flex;gap:4px;padding:4px;border-radius:16px;background:color-mix(in srgb,var(--surface) 70%,transparent);border:1px solid var(--line);margin:4px 0 10px;backdrop-filter:blur(10px)}
+.seg2 button{flex:1;padding:10px;border-radius:12px;font-weight:800;color:var(--muted)}
+.seg2 button.on{background:var(--grad);color:#fff;box-shadow:0 6px 16px -6px rgba(109,94,252,.6)}
+.rank-info{gap:10px;padding:12px 14px}
+.rrow{gap:10px;padding:10px 12px;margin-bottom:8px;transition:transform .18s cubic-bezier(.2,.9,.3,1),box-shadow .2s}
+.rrow.dragging{transition:none;z-index:10;box-shadow:var(--shadowLift);opacity:.97}
+.rank{flex:none;width:30px;text-align:center;font-size:15px;color:var(--muted);font-variant-numeric:tabular-nums;cursor:pointer}
+.rank.top{font-size:22px}
+.grip{flex:none;width:30px;height:40px;display:grid;place-items:center;font-size:22px;color:var(--muted);cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+.rate-head{display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:var(--muted);margin:0 2px 4px 90px;padding-right:4px}
+.list .li .rank{width:26px}

@@ -1,4 +1,4 @@
-const CACHE = 'spieletracker-v11';
+const CACHE = 'spieletracker-v12';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'seed.js', 'firebase-config.js', 'manifest.webmanifest',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png'];
 
