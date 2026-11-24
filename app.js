@@ -187,7 +187,9 @@ const num = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
 const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
 const r1 = v => Math.round(v * 10) / 10;
 const fR = v => v == null ? '–' : String(v).replace('.', ',');
-const pname = pid => P(pid)?.name || '?';
+const isGuest = pid => String(pid).startsWith('g_');
+const guestName = pid => { for (const pl of Object.values(db.plays)) { const x = pl.p?.[pid]; if (x) return x.name || 'Gast'; } return 'Gast'; };
+const pname = pid => isGuest(pid) ? '👤 ' + guestName(pid) : (P(pid)?.name || '?');
 const ICON = {
   x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   crown: '<svg viewBox="0 0 24 24"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>',
@@ -231,7 +233,7 @@ const nOf = play => Object.keys(play.p || {}).length;
 function winSet(play, rows = parts(play), manual = play.winManual) {
   if (manual) return new Set(rows.filter(x => x.win).map(x => x.pid));
   const sc = rows.filter(x => num(x.score) != null);
-  if (!sc.length) return new Set();
+  if (sc.length < 2) return new Set();
   const vals = sc.map(x => num(x.score));
   const best = G(play.gameId)?.lowWins ? Math.min(...vals) : Math.max(...vals);
   return new Set(sc.filter(x => num(x.score) === best).map(x => x.pid));
@@ -481,7 +483,7 @@ function playForm(playId, presetGame, presetPids) {
   const old = playId ? db.plays[playId] : null;
   const f = old
     ? { gameId: old.gameId, date: old.date, exp: [...(old.exp || [])], duration: old.duration ?? null, note: old.note || '', winManual: !!old.winManual,
-        rows: parts(old).map(x => ({ pid: x.pid, score: x.score ?? '', win: !!x.win, rating: x.rating ?? null, rt: false, skip: !!x.skip })) }
+        rows: parts(old).map(x => ({ pid: x.pid, score: x.score ?? '', win: !!x.win, rating: x.rating ?? null, rt: false, skip: !!x.skip, guest: !!x.guest || isGuest(x.pid), name: x.name || '' })) }
     : { gameId: presetGame || null, date: today(), exp: [], duration: null, note: '', winManual: false, rows: [] };
   if (!old) (presetPids && presetPids.length ? presetPids : me() ? [me()] : []).forEach(pid => P(pid) && f.rows.push({ pid, score: '', win: false, rating: null, rt: false }));
   let q = '', picking = !f.gameId;
@@ -514,14 +516,18 @@ function playForm(playId, presetGame, presetPids) {
       <div class="field"><span>Wer hat mitgespielt?</span>
         <div class="chips wrap" style="margin-top:6px">${pl.map(p => `<button class="chip ${f.rows.some(x => x.pid === p.id) ? 'on' : ''}" data-p="${p.id}">${esc(p.name)}</button>`).join('')}
         <button class="chip ghost" id="np">＋ Neu</button></div>
+        <div class="row guestrow"><span class="grow small"><b>Gäste ohne Profil</b><br><span class="muted">tauchen nicht in der Spielerliste auf</span></span>
+          <button class="iconbtn" id="gm" aria-label="Gast entfernen">–</button><b class="gcount">${f.rows.filter(x => x.guest).length}</b><button class="iconbtn" id="gp" aria-label="Gast hinzufügen">+</button></div>
       </div>
       ${n ? `<div class="field"><span>Punkte & Sieger <span style="font-weight:500">(leer lassen geht auch – die anderen können ihre Punkte selbst eintragen)</span></span>
-        ${f.rows.map((x, i) => `<div class="prow">${avatar(P(x.pid))}<div class="grow name ell">${esc(pname(x.pid))}</div>
+        ${f.rows.map((x, i) => `<div class="prow">${x.guest ? '<span class="av guest">👤</span>' : avatar(P(x.pid))}${x.guest
+            ? `<input class="gname grow" data-gn="${i}" placeholder="Gast ${f.rows.slice(0, i + 1).filter(y => y.guest).length}" value="${esc(x.name || '')}">`
+            : `<div class="grow name ell">${esc(pname(x.pid))}</div>`}
           <input type="number" inputmode="decimal" placeholder="Punkte" id="sc-${x.pid}" data-sc="${i}" value="${x.score}">
           <button class="cr ${wins.has(x.pid) ? 'on' : ''}" data-win="${i}" aria-label="Sieger">${ICON.crown}</button></div>`).join('')}
       </div>` : ''}
-      ${g && n && (!PRIV || f.rows.some(x => x.pid === me())) ? `<div class="field"><span>${PRIV ? `Wie gut findest <b>du</b> ${esc(g.name)} zu ${n}? <span style="font-weight:500">(die anderen bewerten auf ihrem Handy)</span>` : `Wie gut ist ${esc(g.name)} zu ${n}? – jeder bewertet selbst`}</span>
-        ${f.rows.map((x, i) => (!PRIV || x.pid === me()) ? rateRow(PRIV ? 'Du' : esc(pname(x.pid)), shownRating(x, g, n), i) : '').join('')}</div>` : ''}
+      ${g && n && (PRIV ? f.rows.some(x => x.pid === me()) : f.rows.some(x => !x.guest)) ? `<div class="field"><span>${PRIV ? `Wie gut findest <b>du</b> ${esc(g.name)} zu ${n}? <span style="font-weight:500">(die anderen bewerten auf ihrem Handy)</span>` : `Wie gut ist ${esc(g.name)} zu ${n}? – jeder bewertet selbst`}</span>
+        ${f.rows.map((x, i) => (!x.guest && (!PRIV || x.pid === me())) ? rateRow(PRIV ? 'Du' : esc(pname(x.pid)), shownRating(x, g, n), i) : '').join('')}</div>` : ''}
       <label class="field"><span>Notiz</span><textarea id="note" rows="2" placeholder="optional">${esc(f.note)}</textarea></label>
       <button class="btn pri" id="save">Speichern</button>
       ${old ? '<button class="btn danger" id="del">Partie löschen</button>' : ''}`;
@@ -535,6 +541,7 @@ function playForm(playId, presetGame, presetPids) {
     $('#date', b).onchange = e => f.date = e.target.value || today();
     $('#dur', b).oninput = e => f.duration = num(e.target.value);
     $('#note', b).oninput = e => f.note = e.target.value;
+    b.querySelectorAll('[data-gn]').forEach(inp => inp.oninput = () => { f.rows[+inp.dataset.gn].name = inp.value; });
     b.querySelectorAll('[data-sc]').forEach(inp => inp.oninput = () => {
       f.rows[+inp.dataset.sc].score = inp.value;
       const w = winSet({ gameId: f.gameId }, f.rows, f.winManual);
@@ -551,6 +558,8 @@ function playForm(playId, presetGame, presetPids) {
       else if ('newg' in t.dataset) { const id = uid(); store.set('games', id, { name: q.trim(), type: 'base', parent: null, loc: '', note: '', ratings: {}, overall: {}, lowWins: false }); f.gameId = id; picking = false; q = ''; s.refresh(); }
       else if (t.dataset.exp) { const i = f.exp.indexOf(t.dataset.exp); i < 0 ? f.exp.push(t.dataset.exp) : f.exp.splice(i, 1); s.refresh(); }
       else if (t.dataset.p) { togglePlayer(t.dataset.p); s.refresh(); }
+      else if (t.id === 'gp') { f.rows.push({ pid: 'g_' + uid(), guest: true, name: '', score: '', win: false, rating: null, rt: false }); s.refresh(); }
+      else if (t.id === 'gm') { for (let i = f.rows.length - 1; i >= 0; i--) if (f.rows[i].guest) { f.rows.splice(i, 1); break; } s.refresh(); }
       else if (t.id === 'np') { const id = addPlayer(prompt('Name des Spielers')); if (id && !f.rows.some(x => x.pid === id)) { f.rows.push({ pid: id, score: '', win: false, rating: null, rt: false }); } setTimeout(s.refresh, 50); }
       else if (t.dataset.win != null) {
         if (!f.winManual) { const w = winSet({ gameId: f.gameId }, f.rows, false); f.rows.forEach(x => x.win = w.has(x.pid)); f.winManual = true; }
@@ -571,6 +580,7 @@ function playForm(playId, presetGame, presetPids) {
     const entry = (x, i) => {
       const e = { o: i, score: num(x.score), win: !!x.win, rating: (PRIV && x.pid !== me()) ? (old?.p?.[x.pid]?.rating ?? null) : shownRating(x, g, n) };
       if (x.skip && e.rating == null) e.skip = true;
+      if (x.guest) { e.guest = true; e.name = (x.name || '').trim(); e.rating = null; }
       return e;
     };
     const top = { gameId: f.gameId, date: f.date, exp: f.exp, duration: f.duration, note: f.note.trim(), winManual: f.winManual };

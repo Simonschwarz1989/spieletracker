@@ -314,3 +314,10 @@ body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opa
 .grip{flex:none;width:30px;height:40px;display:grid;place-items:center;font-size:22px;color:var(--muted);cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
 .rate-head{display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:var(--muted);margin:0 2px 4px 90px;padding-right:4px}
 .list .li .rank{width:26px}
+
+/* Gäste */
+.guestrow{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);gap:8px}
+.guestrow .gcount{min-width:22px;text-align:center;font-size:17px}
+.av.guest{background:var(--surface2);color:var(--muted);font-size:16px}
+.gname{min-width:0;border:0;outline:none;background:var(--surface2);border-radius:12px;padding:10px 12px;font-size:15px;font-weight:700}
+.gname:focus{box-shadow:0 0 0 3px var(--accentSoft)}
