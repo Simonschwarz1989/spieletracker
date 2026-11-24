@@ -260,3 +260,44 @@ main.anim>*:nth-child(5){animation-delay:.12s} main.anim>*:nth-child(6){animatio
 .pc-img{align-self:flex-start;height:112px;min-height:0;background-size:contain;background-repeat:no-repeat;background-color:transparent}
 .pc-img.grad{background-size:auto}
 .cover.img{background-size:contain;background-repeat:no-repeat;background-color:var(--surface)}
+
+/* ================= v5: lebendiger Hintergrund ================= */
+:root{
+  --bgGrad:linear-gradient(160deg,#efeaff 0%,#fbefff 38%,#fff1f4 62%,#eaf3ff 100%);
+  --blobA:rgba(109,94,252,.30); --blobB:rgba(255,95,143,.24); --blobC:rgba(56,189,248,.22); --blobD:rgba(250,204,21,.16);
+  --pattern:#6d5efc; --patternOp:.07;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bgGrad:linear-gradient(160deg,#120f24 0%,#1a1030 45%,#1c0f22 70%,#0d1424 100%);
+  --blobA:rgba(109,94,252,.35); --blobB:rgba(236,72,153,.22); --blobC:rgba(56,189,248,.16); --blobD:rgba(250,204,21,.08);
+  --pattern:#b4abff; --patternOp:.05;
+}}
+html{background:var(--bgGrad) fixed;background-color:var(--bg)}
+body{background:transparent}
+/* große, langsam wandernde Farbflecken über den ganzen Bildschirm */
+body::before{inset:-25vmax;height:auto;z-index:-2;
+  background:
+    radial-gradient(28vmax 28vmax at 12% 18%,var(--blobA),transparent 70%),
+    radial-gradient(26vmax 26vmax at 88% 12%,var(--blobB),transparent 70%),
+    radial-gradient(30vmax 30vmax at 80% 78%,var(--blobC),transparent 70%),
+    radial-gradient(24vmax 24vmax at 18% 88%,var(--blobD),transparent 70%);
+  filter:blur(10px);animation:drift 38s ease-in-out infinite alternate}
+@keyframes drift{0%{transform:translate(0,0) rotate(0)}50%{transform:translate(3vmax,-2vmax) rotate(6deg)}100%{transform:translate(-2vmax,3vmax) rotate(-4deg)}}
+/* dezentes Spielmuster: Würfel, Meeple, Hex-Plättchen, Karte */
+body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:var(--patternOp);
+  background-color:var(--pattern);
+  -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%23000' stroke-width='3' stroke-linejoin='round'%3E%3Crect x='22' y='22' width='38' height='38' rx='8' transform='rotate(14 41 41)'/%3E%3Ccircle cx='33' cy='34' r='3' fill='%23000'/%3E%3Ccircle cx='48' cy='48' r='3' fill='%23000'/%3E%3Cpath d='M150 30c0-8 5-13 12-13s12 5 12 13c0 4-1.5 7-4 9l15 7c4 2 4 7 0 8l-11 2 10 18h-15l-7-12-7 12h-15l10-18-11-2c-4-1-4-6 0-8l15-7c-2.5-2-4-5-4-9z'/%3E%3Cpath d='M55 130l22-13 22 13v26l-22 13-22-13z'/%3E%3Crect x='140' y='125' width='34' height='48' rx='6' transform='rotate(-12 157 149)'/%3E%3Cpath d='M152 145l6-6 6 6-6 6z' transform='rotate(-12 157 149)'/%3E%3Ccircle cx='110' cy='95' r='4' fill='%23000'/%3E%3Ccircle cx='200' cy='105' r='3' fill='%23000'/%3E%3Ccircle cx='20' cy='190' r='3' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") 0 0/220px 220px repeat;
+  mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220' viewBox='0 0 220 220'%3E%3Cg fill='none' stroke='%23000' stroke-width='3' stroke-linejoin='round'%3E%3Crect x='22' y='22' width='38' height='38' rx='8' transform='rotate(14 41 41)'/%3E%3Ccircle cx='33' cy='34' r='3' fill='%23000'/%3E%3Ccircle cx='48' cy='48' r='3' fill='%23000'/%3E%3Cpath d='M150 30c0-8 5-13 12-13s12 5 12 13c0 4-1.5 7-4 9l15 7c4 2 4 7 0 8l-11 2 10 18h-15l-7-12-7 12h-15l10-18-11-2c-4-1-4-6 0-8l15-7c-2.5-2-4-5-4-9z'/%3E%3Cpath d='M55 130l22-13 22 13v26l-22 13-22-13z'/%3E%3Crect x='140' y='125' width='34' height='48' rx='6' transform='rotate(-12 157 149)'/%3E%3Cpath d='M152 145l6-6 6 6-6 6z' transform='rotate(-12 157 149)'/%3E%3Ccircle cx='110' cy='95' r='4' fill='%23000'/%3E%3Ccircle cx='200' cy='105' r='3' fill='%23000'/%3E%3Ccircle cx='20' cy='190' r='3' fill='%23000'/%3E%3C/g%3E%3C/svg%3E") 0 0/220px 220px repeat}
+/* Kopfzeile als Glas über dem Verlauf */
+.top::before{background:color-mix(in srgb,var(--bg) 55%,transparent);backdrop-filter:blur(22px) saturate(1.8);-webkit-backdrop-filter:blur(22px) saturate(1.8);box-shadow:0 1px 0 var(--line)}
+/* Karten leicht gläsern, damit der Hintergrund durchschimmert */
+.card,.stat,.search,.pcard,.field{background:color-mix(in srgb,var(--surface) 86%,transparent);backdrop-filter:blur(14px) saturate(1.3);-webkit-backdrop-filter:blur(14px) saturate(1.3)}
+
+/* Cover-Farbschimmer in Spiel- und Partiekarten */
+.glow{position:relative;overflow:hidden;isolation:isolate}
+.glow::before{content:"";position:absolute;inset:-40px -40px -40px 30%;z-index:-1;pointer-events:none;
+  background:var(--img) center/cover no-repeat;filter:blur(28px) saturate(1.8);opacity:.42;
+  -webkit-mask:linear-gradient(90deg,transparent,#000 55%);mask:linear-gradient(90deg,transparent,#000 55%)}
+@media (prefers-color-scheme:dark){.glow::before{opacity:.5}}
+.glow.todo::before{display:none}
+@media (prefers-reduced-motion:reduce){body::before{animation:none}}

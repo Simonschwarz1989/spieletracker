@@ -178,6 +178,8 @@ const coverSrc = (g, small = false) => g ? (coverURL[g.id] || (small && g.thumb)
 const cover = (g, cls = '') => { const src = coverSrc(g, true);
   return src ? `<span class="cover img ${cls}" style="--h:${hue(g.name)};background-image:url('${esc(src)}')"></span>`
              : `<span class="cover ${cls}" style="--h:${hue(g?.name || '?')}">${esc(initials(g?.name))}</span>`; };
+// Cover als weicher Farbschimmer im Kartenhintergrund
+const glow = g => { const src = coverSrc(g, true); return src ? ` glow" style="--img:url('${esc(src)}')"` : '"'; };
 const rng = (a, b) => a == null ? null : (b == null || a === b ? `${a}` : `${a}–${b}`);
 const weightWord = w => w == null ? '' : w < 1.8 ? 'leicht' : w < 2.6 ? 'eingängig' : w < 3.4 ? 'mittel' : w < 4.1 ? 'anspruchsvoll' : 'Brocken';
 function facts(g, { long = false } = {}) {
@@ -301,7 +303,7 @@ function playCard(p, showGame = true) {
   const rs = rows.map(x => x.rating).filter(x => x != null);
   const avg = rs.length ? r1(mean(rs)) : null;
   rows.sort((a, b) => (wins.has(b.pid) - wins.has(a.pid)) || ((b.score ?? -1e9) - (a.score ?? -1e9)) * (G(p.gameId)?.lowWins ? -1 : 1));
-  return `<div class="card tap" data-play="${p.id}">
+  return `<div class="card tap${showGame ? glow(G(p.gameId)) : '"'} data-play="${p.id}">
     <div class="row">${showGame ? cover(g) : ''}<div class="grow"><div class="name ell">${showGame ? esc(g.name) : fmtDate(p.date)}</div>
       <div class="small muted">${showGame ? fmtDate(p.date) + ' · ' : ''}${rows.length} Spieler${p.duration ? ' · ' + p.duration + ' min' : ''}${rs.length ? ' · ' + rs.length + '× bewertet' : ''}</div></div>
       ${avg != null ? `<span class="rbadge" style="background:${rColor(avg)}">${fR(avg)}</span>` : ''}</div>
@@ -353,7 +355,7 @@ function viewGames() {
   for (const g of list) {
     const m = meta.get(g.id), sc = gameScore(g), bw = bestWith(g);
     const exps = games().filter(x => x.parent === g.id).length;
-    html += `<div class="card tap row" data-game="${g.id}">${cover(g)}<div class="grow">
+    html += `<div class="card tap row${glow(g)} data-game="${g.id}">${cover(g)}<div class="grow">
       <div class="name ell">${esc(g.name)}</div>
       <div class="small muted ell">${facts(g).slice(0, 2).join('  ') || (g.type !== 'base' ? (g.type === 'exp' ? 'Erweiterung' : 'Zubehör') : '')}</div>
       <div class="small muted ell">${[m.count ? m.count + '× gespielt' : 'noch nie gespielt', m.last ? 'zuletzt ' + fmtShort(m.last) : '', exps ? '+' + exps + ' Erw.' : ''].filter(Boolean).join(' · ')}</div></div>
@@ -777,7 +779,7 @@ function viewPick() {
     <div class="pick-sum"><div><b>${n ? list.length : 0}</b> ${list.length === 1 ? 'Spiel passt' : 'Spiele passen'}<br><span class="small muted">für ${n} ${n === 1 ? 'Person' : 'Personen'}</span></div>
       ${list.length ? '<button class="btn pri" id="rand" style="width:auto;padding:13px 18px">🎲 Zufall</button>' : ''}</div>`;
   if (!n) html += `<div class="empty"><p>Wähle aus, wer mitspielt.</p></div>`;
-  html += shown.map(({ g, score, why, m }) => `<div class="pcard tap" data-game="${g.id}">
+  html += shown.map(({ g, score, why, m }) => `<div class="pcard tap${glow(g)} data-game="${g.id}">
       ${coverSrc(g) ? `<div class="pc-img" style="background-image:url('${esc(coverSrc(g))}')"></div>` : `<div class="pc-img grad" style="--h:${hue(g.name)}"><span>${esc(initials(g.name))}</span></div>`}
       <div class="pc-body">
         <div class="row" style="align-items:flex-start;gap:8px"><div class="grow name" style="line-height:1.2">${esc(g.name)}</div>
