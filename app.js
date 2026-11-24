@@ -18,6 +18,8 @@ const G = id => db.games[id];
 const P = id => db.players[id];
 const me = () => { const id = localStorage.getItem(LS.me); return id && db.players[id] ? id : null; };
 
+// „Verliehen“ ersetzt den alten Standort (alte Einträge mit Standort „Verliehen“ gelten weiter als verliehen)
+const isLent = g => !!g && (g.lent ?? (g.loc === 'Verliehen'));
 function gameFromSeed(s) {
   return { id: uid(), name: s.n, type: s.t, parent: null, loc: s.l || '', note: s.a || '', ratings: {}, overall: {}, lowWins: false, ...infoFrom(s) };
 }
@@ -393,7 +395,7 @@ function viewGames() {
     html += `<div class="card tap row${glow(g)} data-game="${g.id}">${cover(g)}<div class="grow">
       <div class="name ell">${esc(g.name)}</div>
       <div class="small muted ell">${facts(g).slice(0, 2).join('  ') || (g.type !== 'base' ? (g.type === 'exp' ? 'Erweiterung' : 'Zubehör') : '')}</div>
-      <div class="small muted ell">${[m.count ? m.count + '× gespielt' : 'noch nie gespielt', m.last ? 'zuletzt ' + fmtShort(m.last) : '', exps ? '+' + exps + ' Erw.' : ''].filter(Boolean).join(' · ')}</div></div>
+      <div class="small muted ell">${[isLent(g) ? '📤 verliehen' : '', m.count ? m.count + '× gespielt' : 'noch nie gespielt', m.last ? 'zuletzt ' + fmtShort(m.last) : '', exps ? '+' + exps + ' Erw.' : ''].filter(Boolean).join(' · ')}</div></div>
       ${sc != null ? `<div><span class="rbadge" style="background:${rColor(sc)};display:block">${fR(sc)}</span>${bw ? `<div class="best">am besten zu ${bw.n.join('/')}</div>` : ''}</div>` : ''}</div>`;
   }
   html += `<button class="btn" id="newGame" style="margin-top:14px">${ICON.plus} Spiel hinzufügen</button>`;
@@ -664,7 +666,7 @@ function gameSheet(gid, { pids = null } = {}) {
       <div class="chips wrap" style="padding:0;margin:0">
         ${g.type !== 'base' ? `<span class="tag acc">${g.type === 'exp' ? 'Erweiterung' : 'Zubehör'}</span>` : ''}
         ${parent ? `<span class="tag">zu ${esc(parent.name)}</span>` : ''}
-        ${g.loc ? `<span class="tag">📍 ${esc(g.loc)}</span>` : ''}
+        ${isLent(g) ? '<span class="tag">📤 verliehen</span>' : ''}
         ${g.lowWins ? '<span class="tag">wenig Punkte gewinnt</span>' : ''}
         <span class="tag">${ps.length}× gespielt</span>
       </div></div>
@@ -693,7 +695,7 @@ function gameSheet(gid, { pids = null } = {}) {
         <div class="stat"><b>${avg}</b><span>Ø Punkte</span></div>` : ''}
       </div>
       ${winList.length ? `<div class="card list">${winList.map(([pid, c]) => `<div class="li">${avatar(P(pid))}<div class="grow name">${esc(pname(pid))}</div><span class="score">${c} ${c === 1 ? 'Sieg' : 'Siege'}</span></div>`).join('')}</div>` : ''}` : ''}
-      ${exps.length ? `<div class="sec">Erweiterungen & Zubehör</div><div class="card list">${exps.map(x => `<div class="li tap" data-gg="${x.id}"><div class="grow"><div class="name ell">${esc(x.name)}</div>${x.loc ? `<div class="small muted">${esc(x.loc)}</div>` : ''}</div>${gameScore(x) != null ? `<span class="rbadge" style="background:${rColor(gameScore(x))}">${fR(gameScore(x))}</span>` : ''}</div>`).join('')}</div>` : ''}
+      ${exps.length ? `<div class="sec">Erweiterungen & Zubehör</div><div class="card list">${exps.map(x => `<div class="li tap" data-gg="${x.id}"><div class="grow"><div class="name ell">${esc(x.name)}</div>${isLent(x) ? '<div class="small muted">📤 verliehen</div>' : ''}</div>${gameScore(x) != null ? `<span class="rbadge" style="background:${rColor(gameScore(x))}">${fR(gameScore(x))}</span>` : ''}</div>`).join('')}</div>` : ''}
       ${ps.length ? `<div class="sec">Partien</div>${ps.map(p => playCard(p, false)).join('')}` : ''}`;
 
     bindRates(s.body, (k, v) => {
@@ -735,7 +737,7 @@ function gameEdit(gid) {
         <label class="field"><span>Erscheinungsjahr</span><input type="number" inputmode="numeric" id="y" value="${g?.year ?? ''}"></label></div>
       <label class="field"><span>Kategorien (mit Komma getrennt)</span><input id="tg" value="${esc((g?.tags || []).join(', '))}" placeholder="z. B. Strategie, Koop"></label>
       <label class="field"><span>Cover-Bild als Link (optional)</span><input id="im" type="url" value="${esc(g?.img || '')}" placeholder="https://…"></label>
-      <label class="field"><span>Standort</span><input id="l" value="${esc(g?.loc || '')}" placeholder="z. B. Regal 1"></label>
+      <label class="field row" style="cursor:pointer"><input type="checkbox" id="lent" style="width:22px;height:22px" ${isLent(g) ? 'checked' : ''}><b class="grow">📤 Gerade verliehen</b></label>
       <label class="field row" style="cursor:pointer"><input type="checkbox" id="lw" style="width:22px;height:22px" ${g?.lowWins ? 'checked' : ''}><b class="grow">Wenig Punkte gewinnt</b></label>
       <label class="field"><span>Anmerkung</span><textarea id="a" rows="2">${esc(g?.note || '')}</textarea></label>
       <button class="btn pri" id="sv">Speichern</button>
@@ -747,7 +749,7 @@ function gameEdit(gid) {
       const type = $('#t', s.body).value;
       const v = id => $('#' + id, s.body).value.trim(), n = id => num(v(id));
       const t0 = n('t0'), t1 = n('t1');
-      const rec = { name, type, parent: type === 'base' ? null : ($('#p', s.body).value || null), loc: v('l'), note: v('a'), lowWins: $('#lw', s.body).checked,
+      const rec = { name, type, parent: type === 'base' ? null : ($('#p', s.body).value || null), lent: $('#lent', s.body).checked, note: v('a'), lowWins: $('#lw', s.body).checked,
         desc: v('d'), minP: n('mi'), maxP: n('ma') ?? n('mi'), time: t0 == null && t1 == null ? null : [t0 ?? t1, t1 ?? t0], weight: n('w'), year: n('y'),
         tags: v('tg').split(',').map(x => x.trim()).filter(Boolean), img: v('im') || null, thumb: v('im') === (g?.img || '') ? (g?.thumb ?? null) : null, infoV: INFO_V };
       if (g) store.update('games', g.id, rec); else store.set('games', uid(), { ...rec, ratings: {}, overall: {} });
@@ -788,7 +790,7 @@ function pickWho() { const pk = ui.pick; if (!pk.who) pk.who = new Set(me() ? [m
 function pickResults() {
   const pk = ui.pick, who = [...pickWho()], n = who.length + pk.guests;
   const freqTags = {};
-  const pool = games().filter(g => g.type === 'base' || !g.parent);
+  const pool = games().filter(g => (g.type === 'base' || !g.parent) && !isLent(g));
   pool.forEach(g => (g.tags || []).forEach(t => freqTags[t] = (freqTags[t] || 0) + 1));
   const list = pool.filter(g =>
     n > 0 && (g.minP == null || (g.minP <= n && n <= (g.maxP ?? g.minP))) &&
