@@ -210,11 +210,21 @@ const cover = (g, cls = '') => { const src = coverSrc(g, true);
 const glow = g => { const src = coverSrc(g, true); return src ? ` glow" style="--img:url('${esc(src)}')"` : '"'; };
 const rng = (a, b) => a == null ? null : (b == null || a === b ? `${a}` : `${a}–${b}`);
 const weightWord = w => w == null ? '' : w < 1.8 ? 'leicht' : w < 2.6 ? 'eingängig' : w < 3.4 ? 'mittel' : w < 4.1 ? 'anspruchsvoll' : 'Brocken';
+const bggURL = g => g.bgg ? `https://boardgamegeek.com/boardgame/${g.bgg}` : `https://boardgamegeek.com/geeksearch.php?action=search&objecttype=boardgame&q=${encodeURIComponent(g.name)}`;
+function weightMeter(g) {
+  const par = g.parent && G(g.parent), w = g.weight ?? par?.weight ?? null;
+  if (w == null) return '';
+  const segs = [1, 2, 3, 4, 5].map(i => `<i style="--f:${Math.max(0, Math.min(1, w - (i - 1))) * 100}%"></i>`).join('');
+  return `<div class="wmeter" style="--wh:${Math.round(140 - (w - 1) / 4 * 140)}">
+    <div class="wm-top"><span class="wm-lbl">🧠 Komplexität</span><span class="wm-val"><b>${fR(w)}</b>/5 · ${weightWord(w)}${g.weight == null ? ' <span class="muted">(wie Grundspiel)</span>' : ''}</span></div>
+    <div class="wm-bar">${segs}</div>
+    <div class="wm-scale"><span>leicht</span><span>mittel</span><span>schwer</span></div></div>`;
+}
 function facts(g, { long = false } = {}) {
   const f = [];
   if (g.minP != null) f.push(`👥 ${rng(g.minP, g.maxP)}`);
   if (g.time) f.push(`⏱ ${rng(g.time[0], g.time[1])} Min`);
-  if (g.weight != null) f.push(long ? `🧠 ${fR(g.weight)}/5 · ${weightWord(g.weight)}` : `🧠 ${weightWord(g.weight)}`);
+  if (g.weight != null && !long) f.push(`🧠 ${weightWord(g.weight)}`);
   if (long && g.year) f.push(`📅 ${g.year}`);
   return f;
 }
@@ -670,12 +680,14 @@ function gameSheet(gid, { pids = null } = {}) {
         ${g.lowWins ? '<span class="tag">wenig Punkte gewinnt</span>' : ''}
         <span class="tag">${ps.length}× gespielt</span>
       </div></div>
-      ${facts(g, { long: true }).length || g.desc || (g.tags || []).length ? `<div class="card info">
+      ${facts(g, { long: true }).length || g.desc || (g.tags || []).length || weightMeter(g) ? `<div class="card info">
         ${facts(g, { long: true }).length ? `<div class="facts">${facts(g, { long: true }).map(x => `<span>${x}</span>`).join('')}</div>` : ''}
+        ${weightMeter(g)}
         ${g.desc ? `<p class="desc ${more ? '' : 'clamp'}" id="desc">${esc(g.desc)}</p>` : ''}
         ${(g.tags || []).length ? `<div class="chips wrap" style="padding:0;margin-top:8px">${g.tags.map(t => `<span class="tag acc">${esc(t)}</span>`).join('')}</div>` : ''}
       </div>` : `<button class="btn" id="edit2" style="margin-bottom:12px">✏️ Beschreibung & Infos ergänzen</button>`}
       ${g.note ? `<p class="small muted" style="margin:0 4px 10px">📝 ${esc(g.note)}</p>` : ''}
+      <a class="bgg-link" href="${esc(bggURL(g))}" target="_blank" rel="noopener"><span class="bgg-logo">BGG</span><span class="grow">${g.bgg ? 'Auf BoardGameGeek ansehen' : 'Auf BoardGameGeek suchen'}</span><span aria-hidden="true">↗</span></a>
       <button class="btn pri" id="play">${ICON.plus} ${pids ? 'Los geht’s – Partie starten' : 'Partie eintragen'}</button>
       <div class="sec">Bewertung</div>
       <div class="card">
@@ -779,7 +791,7 @@ function coverMenu(gid) {
       <p class="small muted" style="margin:10px 4px 0">Tipp: Bei BoardGameGeek das Spiel öffnen, auf das Cover tippen, Bild lange drücken → „Bildadresse kopieren“ und hier bei „Bild-Link einfügen“ einsetzen.</p>
       ${coverURL[gid] || g.img ? '<button class="btn danger" id="cd">Cover entfernen</button>' : ''}`;
     $('#cp', s.body).onclick = () => { closeSheet(); pickPhoto(gid); };
-    $('#cs', s.body).onclick = () => window.open(g.bgg ? `https://boardgamegeek.com/boardgame/${g.bgg}` : `https://boardgamegeek.com/geeksearch.php?action=search&objecttype=boardgame&q=${encodeURIComponent(g.name)}`, '_blank');
+    $('#cs', s.body).onclick = () => window.open(bggURL(g), '_blank');
     $('#cu', s.body).onclick = () => { const u = prompt('Link zum Bild (z. B. von BoardGameGeek: Bild lange drücken → „Bildadresse kopieren“)', g.img || ''); if (u != null) { store.update('games', gid, { img: u.trim() || null, thumb: null }); closeSheet(); } };
     const cd = $('#cd', s.body); if (cd) cd.onclick = async () => { if (coverURL[gid]) await removeCover(gid); if (g.img) store.update('games', gid, { img: null, thumb: null }); closeSheet(); };
   });
